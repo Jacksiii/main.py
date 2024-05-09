@@ -42,31 +42,55 @@ n_relations = 0
 results_dir = "mcclkexperiment"
 if not os.path.exists(results_dir):
     os.makedirs(results_dir)
-
-# 增加一个函数来保存实验结果到CSV文件
-def save_results_to_csv(results, filename):
-    import csv
+# 增加一个函数来保存每个样本的损失和得分到CSV文件
+def save_sample_losses(epoch, total_losses, scores, bce_losses, emb_losses, labels, filename):
     file_path = os.path.join(results_dir, filename)
     file_exists = os.path.isfile(file_path)
     with open(file_path, mode='a', newline='') as file:
         writer = csv.writer(file)
         if not file_exists:
-            writer.writerow(["Epoch", "Training Time", "Testing Time", "Loss", "Test AUC", "Test F1"])
-        writer.writerow(results)
+            writer.writerow(["Epoch", "Sample Index", "Total Loss", "Score", "BCE Loss", "Emb Loss", "Label"])
+        for i in range(len(labels)):
+            writer.writerow([epoch, i, total_losses[i].item(), scores[i].item(), bce_losses[i].item(), emb_losses[i].item(), labels[i].item()])
+
+def ctr_eval_and_save_losses(model, data, epoch, filename):
+    model.eval()
+    start = 0
+    while start < data.shape[0]:
+        batch = get_feed_dict(data, start, start + args.batch_size)
+        total_loss, scores, bce_loss, emb_loss = model(batch)
+        labels = data[start:start + args.batch_size, 2]
+
+        # Save sample losses to CSV
+        save_sample_losses(epoch, total_loss, scores, bce_loss, emb_loss, labels, filename)
+
+        start += args.batch_size
+    model.train()
+
+# 增加一个函数来保存实验结果到CSV文件
+#def save_results_to_csv(results, filename):
+#    import csv
+#    file_path = os.path.join(results_dir, filename)
+#    file_exists = os.path.isfile(file_path)
+#    with open(file_path, mode='a', newline='') as file:
+#        writer = csv.writer(file)
+#        if not file_exists:
+#            writer.writerow(["Epoch", "Training Time", "Testing Time", "Loss", "Test AUC", "Test F1"])
+#        writer.writerow(results)
 
 # 增加一个函数来保存图形
-def save_plots(history, base_filename):
-    plt.figure(figsize=(10, 8))
-    plt.plot(history['epoch'], history['loss'], label='Loss')
-    plt.plot(history['epoch'], history['auc'], label='Test AUC')
-    plt.plot(history['epoch'], history['f1'], label='Test F1')
-    plt.title('Model Performance Over Epochs')
-    plt.xlabel('Epoch')
-    plt.ylabel('Value')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(results_dir, f"{base_filename}.png"))
-    plt.close()
+#def save_plots(history, base_filename):
+#    plt.figure(figsize=(10, 8))
+#    plt.plot(history['epoch'], history['loss'], label='Loss')
+#    plt.plot(history['epoch'], history['auc'], label='Test AUC')
+#    plt.plot(history['epoch'], history['f1'], label='Test F1')
+#    plt.title('Model Performance Over Epochs')
+#    plt.xlabel('Epoch')
+#    plt.ylabel('Value')
+#    plt.legend()
+#    plt.grid(True)
+#    plt.savefig(os.path.join(results_dir, f"{base_filename}.png"))
+#    plt.close()
 
 def get_feed_dict(train_entity_pairs, start, end):
     train_entity_pairs = torch.LongTensor(np.array([[cf[0], cf[1], cf[2]] for cf in train_entity_pairs], np.int32))
@@ -193,7 +217,7 @@ def topk_eval(model, train_data, data):
     recall = [np.mean(recall_list[k]) for k in k_list]
     return recall
     # _show_recall_info(zip(k_list, recall))
-
+'''
 if __name__ == '__main__':
     """fix the random seed"""
     seed = 2020
@@ -308,3 +332,41 @@ if __name__ == '__main__':
     # 保存图形
     save_plots(history, base_filename)
     print('early stopping at %d, test_auc:%.4f' % (epoch-30, cur_best_pre_0))
+'''
+if __name__ == '__main__':
+    """fix the random seed"""
+    seed = 2020
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    """read args"""
+    global args, device
+    args = parse_args()
+    device = torch.device("cuda:"+str(args.gpu_id)) if args.cuda else torch.device("cpu")
+
+    """build dataset"""
+    train_cf, test_cf, user_dict, n_params, graph, mat_list = load_data(args)
+    adj_mat_list, norm_mat_list, mean_mat_list = mat_list
+
+    n_users = n_params['n_users']
+    n_items = n_params['n_items']
+    n_entities = n_params['n_entities']
+    n_relations = n_params['n_relations']
+    n_nodes = n_params['n_nodes']
+
+    test_cf_pairs = torch.LongTensor(np.array([[cf[0], cf[1], cf[2]] for cf in test_cf], np.int32))
+
+    """define model"""
+    model = Recommender(n_params, args, graph, mean_mat_list[0]).to(device)
+
+    print("start evaluation ...")
+    for epoch in range(args.epoch):
+        # Evaluate and save losses for each sample
+        ctr_eval_and_save_losses(model, test_cf_pairs, epoch, 'sample_losses.csv')
+        print(f"Completed saving losses for epoch {epoch}")
+
+    print('Evaluation complete.')
